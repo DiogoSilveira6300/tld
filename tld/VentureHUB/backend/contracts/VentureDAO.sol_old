@@ -1,0 +1,209 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "@openzeppelin/contracts/governance/Governor.sol";
+import "@openzeppelin/contracts/governance/extensions/GovernorSettings.sol";
+import "@openzeppelin/contracts/governance/extensions/GovernorCountingSimple.sol";
+import "@openzeppelin/contracts/governance/extensions/GovernorVotes.sol";
+import "@openzeppelin/contracts/governance/extensions/GovernorVotesQuorumFraction.sol";
+import "@openzeppelin/contracts/governance/extensions/GovernorTimelockControl.sol";
+import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+
+contract VentureDAO is
+    Governor,
+    GovernorSettings,
+    GovernorCountingSimple,
+    GovernorVotes,
+    GovernorVotesQuorumFraction,
+    GovernorTimelockControl
+{
+    using ECDSA for bytes32;
+
+    // This new constant defines the structure of your proposal for signing
+    bytes32 public constant PROPOSAL_TYPEHASH = keccak256(
+        "Propose(address[] targets,uint256[] values,bytes[] calldatas,string description)"
+    );
+
+    address private _proposerOverride;
+
+    constructor(
+        IVotes _token,
+        TimelockController _timelock,
+        uint48 _initialVotingDelay,
+        uint32 _initialVotingPeriod,
+        uint256 _initialProposalThreshold,
+        uint256 _initialQuorumNumerator
+    )
+        Governor("VentureDAO")
+        GovernorSettings(_initialVotingDelay, _initialVotingPeriod, _initialProposalThreshold)
+        GovernorVotes(_token)
+        GovernorVotesQuorumFraction(_initialQuorumNumerator)
+        GovernorTimelockControl(_timelock)
+    {}
+
+    // --- REQUIRED OVERRIDES ---
+
+    function votingDelay()
+        public
+        view
+        override(Governor, GovernorSettings)
+        returns (uint256)
+    {
+        return super.votingDelay();
+    }
+
+    function votingPeriod()
+        public
+        view
+        override(Governor, GovernorSettings)
+        returns (uint256)
+    {
+        return super.votingPeriod();
+    }
+
+    function proposalThreshold()
+        public
+        view
+        override(Governor, GovernorSettings)
+        returns (uint256)
+    {
+        return super.proposalThreshold();
+    }
+
+    function quorum(uint256 blockNumber)
+        public
+        view
+        override(Governor, GovernorVotesQuorumFraction)
+        returns (uint256)
+    {
+        return super.quorum(blockNumber);
+    }
+
+    function state(uint256 proposalId)
+        public
+        view
+        override(Governor, GovernorTimelockControl)
+        returns (ProposalState)
+    {
+        return super.state(proposalId);
+    }
+
+    function proposalNeedsQueuing(uint256 proposalId)
+        public
+        view
+        override(Governor, GovernorTimelockControl)
+        returns (bool)
+    {
+        return super.proposalNeedsQueuing(proposalId);
+    }
+
+    function _queueOperations(
+        uint256 proposalId,
+        address[] memory targets,
+        uint256[] memory values,
+        bytes[] memory calldatas,
+        bytes32 descriptionHash
+    )
+        internal
+        override(Governor, GovernorTimelockControl)
+        returns (uint48)
+    {
+        return super._queueOperations(proposalId, targets, values, calldatas, descriptionHash);
+    }
+
+    function _executeOperations(
+        uint256 proposalId,
+        address[] memory targets,
+        uint256[] memory values,
+        bytes[] memory calldatas,
+        bytes32 descriptionHash
+    )
+        internal
+        override(Governor, GovernorTimelockControl)
+    {
+        super._executeOperations(proposalId, targets, values, calldatas, descriptionHash);
+    }
+
+    function _cancel(
+        address[] memory targets,
+        uint256[] memory values,
+        bytes[] memory calldatas,
+        bytes32 descriptionHash
+    )
+        internal
+        override(Governor, GovernorTimelockControl)
+        returns (uint256)
+    {
+        return super._cancel(targets, values, calldatas, descriptionHash);
+    }
+
+    function _executor()
+        internal
+        view
+        override(Governor, GovernorTimelockControl)
+        returns (address)
+    {
+        return super._executor();
+    }
+
+    function supportsInterface(bytes4 interfaceId)
+        public
+        view
+        override(Governor)
+        returns (bool)
+    {
+        return super.supportsInterface(interfaceId);
+    }
+
+    function proposeBySig(
+        address proposer,
+        address[] memory targets,
+        uint256[] memory values,
+        bytes[] memory calldatas,
+        string memory description,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) public returns (uint256) {
+        bytes32 structHash = keccak256(
+            abi.encode(
+                PROPOSAL_TYPEHASH,
+                keccak256(abi.encodePacked(targets)),
+                keccak256(abi.encodePacked(values)),
+                keccak256(abi.encode(calldatas)),
+                keccak256(bytes(description))
+            )
+        );
+
+        bytes32 hash = _hashTypedDataV4(structHash);
+        address recovered = ECDSA.recover(hash, v, r, s);
+
+        require(recovered == proposer, "VentureDAO: invalid signature");
+        require(recovered != address(0), "VentureDAO: invalid signature");
+
+        require(getVotes(proposer, block.number - 1) >= proposalThreshold(), "Governor: proposer votes below threshold");
+
+        _proposerOverride = proposer;
+        uint256 proposalId = _propose(targets, values, calldatas, description, proposer);
+        _proposerOverride = address(0);
+
+        return proposalId;
+    }
+    
+    function castVoteBySigRaw(
+        uint256 proposalId,
+        uint8 support,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) public returns (uint256) {
+        bytes32 structHash = keccak256(
+            abi.encode(BALLOT_TYPEHASH, proposalId, support)
+        );
+
+        bytes32 hash = _hashTypedDataV4(structHash);
+        address signer = ECDSA.recover(hash, v, r, s);
+
+        return _castVote(proposalId, signer, support, "");
+    }
+}
